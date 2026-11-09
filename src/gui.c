@@ -26,6 +26,9 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#if defined(__APPLE__) && defined(CPLUG_BUILD_AUV2)
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 
 #include <shaders.glsl.h>
 
@@ -40,7 +43,7 @@ extern Synth g_synth;
 
 enum
 {
-    HEIGHT_HEADER  = 32,
+    HEIGHT_HEADER  = 76,
     HEIGHT_FOOTER  = 20,
     BORDER_PADDING = 8,
 
@@ -410,7 +413,7 @@ void* pw_create_gui(void* _plugin, void* _pw)
 #ifdef NDEBUG
         // Requires installer putting assets in correct folder
         int         len             = xfiles_get_user_directory(path, sizeof(path), XFILES_USER_DIRECTORY_APPDATA);
-        const char* relpath_plugin  = XFILES_DIR_STR "Cure Audio" XFILES_DIR_STR "Scream" XFILES_DIR_STR;
+        const char* relpath_plugin  = XFILES_DIR_STR "DishItDash" XFILES_DIR_STR "Scream Custom" XFILES_DIR_STR;
         len                        += xfmt(path, len, "%s", relpath_plugin);
 #else
         // Load from assets dir
@@ -422,6 +425,16 @@ void* pw_create_gui(void* _plugin, void* _pw)
         // Don't increment path len
         xfmt(path, len, "%s", "Tomorrow-SemiBold.ttf");
 
+#if defined(__APPLE__) && defined(CPLUG_BUILD_AUV2)
+        CFBundleRef bundle = CFBundleGetBundleWithIdentifier(CFSTR(CPLUG_AUV2_BUNDLE_ID));
+        if (bundle) {
+            CFURLRef font_url = CFBundleCopyResourceURL(bundle, CFSTR("Tomorrow-SemiBold"), CFSTR("ttf"), NULL);
+            if (font_url) {
+                CFURLGetFileSystemRepresentation(font_url, true, (UInt8*)path, sizeof(path));
+                CFRelease(font_url);
+            }
+        }
+#endif
         const char* font_paths[] = {
             path,
 #ifdef _WIN32
@@ -1405,8 +1418,8 @@ void pw_tick(void* _gui)
         uint32_t events = 0;
 
         float                cx     = lm->width * 0.5f;
-        float                cy     = lm->height_header * 0.5f + 4;
-        const XVGTextLayout* layout = xvg_create_text_layout(bg, "SCREAM", NULL, 24 * lm->param_scale, 0, 0, 0, false);
+        float                cy     = 16 * lm->param_scale + 4;
+        const XVGTextLayout* layout = xvg_create_text_layout(bg, "SCREAM CUSTOM", NULL, 24 * lm->param_scale, 0, 0, 0, false);
         xvg_draw_text_layout(bg, layout, cx, cy, XVG_ALIGN_CC, 0, C_BG_LIGHT);
 
         // Show evil red dot?
@@ -1447,7 +1460,7 @@ void pw_tick(void* _gui)
         // Output gain
         const int  output_gain_with = 120 * lm->param_scale;
         float      fsize            = 12 * lm->param_scale;
-        imgui_rect rect             = {0, 0, lm->width - 16, lm->height_header + 8};
+        imgui_rect rect             = {0, 0, lm->width - 16, 36 * lm->param_scale};
         rect.x                      = floorf(rect.r - output_gain_with);
         events                      = imgui_get_events_rect(im, 'outg', &rect);
         handle_param_events(gui, PARAM_OUTPUT_GAIN, events, 200);
@@ -1460,6 +1473,36 @@ void pw_tick(void* _gui)
 
         xvg_draw_text(xvg, rect.r, (rect.b - rect.y) * 0.5f, label, label + label_len, fsize, XVG_ALIGN_CR, C_GREY_1);
         xvg_draw_text(bg, rect.x, (rect.b - rect.y) * 0.5f, "OUTPUT", NULL, fsize, XVG_ALIGN_CL, C_TEXT_DARK_BG);
+    }
+
+    // Full-range smoother controls. Drag vertically, double click to reset.
+    {
+        const float scale = lm->param_scale;
+        const float y = 48 * scale;
+        const float cell = (lm->width - 32) / 3.0f;
+        const ParamID ids[2] = {PARAM_SMOOTH_AMOUNT, PARAM_SMOOTH_LIMIT};
+        const char* labels[2] = {"SMOOTH", "MAX REDUCTION"};
+        for (int k = 0; k < 2; k++) {
+            imgui_rect rect = {16 + k * cell, y - 10 * scale, 16 + (k + 1) * cell - 12, y + 22 * scale};
+            unsigned events = imgui_get_events_rect(im, k ? 'smcp' : 'smam', &rect);
+            handle_param_events(gui, ids[k], events, 200);
+            char value[32];
+            param_value_to_string(ids[k], value, sizeof(value), main_get_param(p, ids[k]));
+            xvg_draw_text(bg, rect.x, y + 5 * scale, labels[k], NULL, 12 * scale, XVG_ALIGN_CL, C_TEXT_DARK_BG);
+            xvg_draw_text(xvg, rect.r, y + 5 * scale, value, NULL, 12 * scale, XVG_ALIGN_CR, C_GREY_1);
+            tooltip_handle_events(&gui->tooltip, rect,
+                k ? "Maximum spectral reduction, 0 to 12 dB. Drag up/down; double click resets to 6 dB."
+                  : "Full-range resonance smoothing. Drag up/down; zero preserves the original tone with the same latency.",
+                gui->frame_start_time, events);
+        }
+        imgui_rect rect = {16 + 2 * cell, y - 10 * scale, lm->width - 16, y + 22 * scale};
+        unsigned events = imgui_get_events_rect(im, 'smls', &rect);
+        if (events & IMGUI_EVENT_MOUSE_LEFT_DOWN)
+            xt_atomic_store_u8(&p->smooth_listen, !xt_atomic_load_u8(&p->smooth_listen));
+        bool listen = xt_atomic_load_u8(&p->smooth_listen);
+        xvg_draw_text(bg, rect.x, y + 5 * scale, "LISTEN TO REMOVED", NULL, 12 * scale, XVG_ALIGN_CL, C_TEXT_DARK_BG);
+        draw_checkbox(bg, 12 * scale, y + 5 * scale, rect.r, scale, listen);
+        tooltip_handle_events(&gui->tooltip, rect, "Audition only what the smoother removes. Not saved with the session.", gui->frame_start_time, events);
     }
 
     // Params
@@ -2418,7 +2461,7 @@ void pw_tick(void* _gui)
         float x, y, w, h, b, img_scale;
         x = BORDER_PADDING * 2;
         y = BORDER_PADDING;
-        b = lm->content_y - BORDER_PADDING;
+        b = 32 * lm->param_scale;
         w = h             = b - y;
         imgui_rect rect   = {x, y, x + w, y + h};
         unsigned   e_logo = imgui_get_events_rect(im, 'cure', &rect);

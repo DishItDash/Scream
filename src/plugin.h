@@ -12,6 +12,7 @@
 
 #include "im_points.h"
 #include "libs/ADAA.h"
+#include "spectral_smoother.h"
 
 typedef enum ParamID
 {
@@ -32,6 +33,8 @@ typedef enum ParamID
     PARAM_SEC_RATE_LFO_2,
     // PARAM_RETRIG_LFO_1, // Deprecated. See state.c for details
     // PARAM_RETRIG_LFO_2,
+    PARAM_SMOOTH_AMOUNT,
+    PARAM_SMOOTH_LIMIT,
     PARAM_COUNT,
 } ParamID;
 
@@ -51,6 +54,8 @@ static const char* PARAM_STR[] = {
     "PARAM_SYNC_RATE_LFO_2",
     "PARAM_SEC_RATE_LFO_1",
     "PARAM_SEC_RATE_LFO_2",
+    "PARAM_SMOOTH_AMOUNT",
+    "PARAM_SMOOTH_LIMIT",
     // "PARAM_RETRIG_LFO_1",
     // "PARAM_RETRIG_LFO_2",
 };
@@ -235,6 +240,9 @@ typedef struct Plugin
         float hp[2];
     } state[2];
     SmoothedValue output_gain;
+    SpectralSmoother* smoother;
+    float* smooth_inputs; // dry and mix, two channels, max_block_size samples each
+    xt_atomic_uint8_t smooth_listen;
 
     // Event stuff
 
@@ -282,3 +290,4 @@ double main_get_param(Plugin* p, ParamID id);
 
 typedef xvecu  plugin_version;
 plugin_version parse_plugin_version(const char* version_string);
+int param_value_to_string(ParamID paramId, char* buf, size_t bufsize, double value);

@@ -55,7 +55,7 @@ typedef struct PluginStatev0_3_0
 {
     double params[14];
 
-    char _padding_1[16]; // unused
+    double smoother_params[2]; // custom v1.1+: reuses the original reserved bytes
 
     xvec2f lfo_mod_amounts[5];
 
@@ -70,7 +70,7 @@ typedef struct PluginStatev0_3_0
     size_t        blob_length;
     unsigned char blob[];
 } PluginState;
-_Static_assert(PARAM_COUNT == 14, "Num params changed, update state");
+_Static_assert(PARAM_COUNT == 16, "Num params changed, update state");
 _Static_assert(NUM_AUTOMATABLE_PARAMS == 5, "Num autotable params changed, update state");
 _Static_assert(NUM_LFO_PATTERNS == 8, "Max LFO patterns changed, update state");
 
@@ -121,8 +121,9 @@ void cplug_saveState(void* _p, const void* stateCtx, cplug_writeProc writeProc)
     size_t       state_size = sizeof(PluginState) + requried_blob_size;
     PluginState* state      = xcalloc(1, state_size);
 
-    _Static_assert(sizeof(state->params) == sizeof(p->main_params), "");
-    memcpy(state->params, p->main_params, sizeof(p->main_params));
+    memcpy(state->params, p->main_params, sizeof(state->params));
+    state->smoother_params[0] = p->main_params[PARAM_SMOOTH_AMOUNT];
+    state->smoother_params[1] = p->main_params[PARAM_SMOOTH_LIMIT];
 
     _Static_assert(sizeof(state->lfo_mod_amounts) == sizeof(p->lfo_mod_amounts), "");
     _Static_assert(ARRLEN(state->lfo_mod_amounts) == ARRLEN(p->lfo_mod_amounts), "");
@@ -200,7 +201,15 @@ void state_update_params(Plugin* p, double* state_params, size_t num_params)
         p->main_params[i] = xm_clampd(v, vmin, vmax);
     }
 
-    memcpy(p->audio_params, p->main_params, sizeof(p->main_params));
+    // Apply restored values after pending UI events, on the audio thread.
+    // Directly copying audio_params lets older queued writes undo the restored state.
+    for (int i = 0; i < PARAM_COUNT; i++) {
+        CplugEvent event = {0};
+        event.type = EVENT_SET_PARAMETER;
+        event.parameter.id = i;
+        event.parameter.value = p->main_params[i];
+        send_to_audio_event_queue(p, &event);
+    }
     p->cplug_ctx->rescan(p->cplug_ctx, CPLUG_FLAG_RESCAN_PARAM_VALUES);
 }
 
@@ -209,6 +218,8 @@ void cplug_loadState(void* _p, const void* stateCtx, cplug_readProc readProc)
 {
     // println("%s %s %p %p %p", __FUNCTION__, _p, stateCtx, readProc);
     Plugin* p = _p;
+
+    xt_atomic_store_u8(&p->smooth_listen, 0);
 
     StateHeader header = {0};
     int64_t     ret    = readProc(stateCtx, &header, sizeof(header));
@@ -306,10 +317,18 @@ void cplug_loadState(void* _p, const void* stateCtx, cplug_readProc readProc)
                     state->lfo_loop_type[0]    = LFO_RETRIG;
                     state->lfo_loop_type[1]    = LFO_RETRIG;
                     state->selected_lfo_idx    = 0;
-                    memset(state->_padding_1, 0, sizeof(state->_padding_1));
+                    memset(state->smoother_params, 0, sizeof(state->smoother_params));
                     memset(state->_padding_2, 0, sizeof(state->_padding_2));
                 }
-                state_update_params(p, state->params, ARRLEN(state->params));
+                double params[PARAM_COUNT];
+                memcpy(params, state->params, sizeof(state->params));
+                const plugin_version custom_v1_1 = {.major = 1, .minor = 1};
+                for (int k = 0; k < 2; k++) {
+                    double value = state->smoother_params[k];
+                    params[PARAM_SMOOTH_AMOUNT + k] = header.version.u32 >= custom_v1_1.u32 && isfinite(value)
+                        ? xm_clampd(value, 0, 1) : cplug_getDefaultParameterValue(p, PARAM_SMOOTH_AMOUNT + k);
+                }
+                state_update_params(p, params, PARAM_COUNT);
 
                 _Static_assert(sizeof(state->lfo_mod_amounts) == sizeof(p->lfo_mod_amounts), "");
                 _Static_assert(ARRLEN(state->lfo_mod_amounts) == ARRLEN(p->lfo_mod_amounts), "");

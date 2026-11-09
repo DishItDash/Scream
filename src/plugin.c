@@ -89,7 +89,7 @@ void* cplug_createPlugin(CplugHostContext* ctx)
 {
     g_is_main_thread = true;
     library_load_platform();
-    updates_init();
+    // Custom builds do not query upstream release notifications.
 
     struct Plugin* p                   = NULL;
     size_t         expected_max_memory = sizeof(*p);
@@ -177,7 +177,7 @@ void cplug_destroyPlugin(void* _p)
 {
     CPLUG_LOG_ASSERT(_p != NULL);
 
-    updates_deinit();
+
 
     Plugin* p = _p;
     for (int i = 0; i < ARRLEN(p->lfos); i++)
@@ -192,6 +192,9 @@ void cplug_destroyPlugin(void* _p)
 #ifdef CPLUG_BUILD_STANDALONE
     synth_deinit(&g_synth);
 #endif
+
+    ss_destroy(p->smoother);
+    free(p->smooth_inputs);
 
     library_unload_platform();
 
@@ -209,8 +212,23 @@ void cplug_getOutputBusName(void* p, uint32_t idx, char* buf, size_t buflen)
     xtr_fmt(buf, buflen, 0, "Audio Output");
 }
 
-uint32_t cplug_getLatencyInSamples(void* p) { return 0; }
-uint32_t cplug_getTailInSamples(void* p) { return 0; }
+uint32_t cplug_getLatencyInSamples(void* p) { return ss_latency(((Plugin*)p)->smoother); }
+uint32_t cplug_getTailInSamples(void* p) { return cplug_getLatencyInSamples(p); }
+
+/* AU reset must not allocate or rebuild FFT plans on the render thread. */
+void scream_custom_reset(void* ptr)
+{
+    Plugin* p = ptr;
+    ss_reset(p->smoother);
+    for (int ch = 0; ch < 2; ch++) {
+        struct FilterState* state = &p->state[ch];
+        memset(state, 0, sizeof(*state));
+        adsr_set_params(&state->autogain_adsr, 0.020, 0.001, 1, 0.1, p->sample_rate);
+        for (int i = 0; i < NUM_AUTOMATABLE_PARAMS; i++)
+            smoothvalue_reset(&state->values[i], p->audio_params[i]);
+    }
+    p->retrig_detection = 0;
+}
 
 #pragma mark -Audio
 
@@ -219,6 +237,11 @@ void cplug_setSampleRateAndBlockSize(void* _p, double sampleRate, uint32_t maxBl
     Plugin* p         = _p;
     p->sample_rate    = sampleRate;
     p->max_block_size = maxBlockSize;
+
+    ss_destroy(p->smoother);
+    p->smoother = ss_create(sampleRate);
+    free(p->smooth_inputs);
+    p->smooth_inputs = calloc((size_t)maxBlockSize * 4, sizeof(float));
 
     memset(&p->state, 0, sizeof(p->state));
 
@@ -620,7 +643,13 @@ void process_audio(Plugin* p, float** output, int start_sample, int num_frames)
                 y = 0;
 
             // *it = xm_clampf(y, -1, 1);
-            audio[i] = wet * y + (1 - wet) * audio[i];
+            if (p->smooth_inputs) {
+                p->smooth_inputs[(2 * ch) * p->max_block_size + i] = audio[i];
+                p->smooth_inputs[(2 * ch + 1) * p->max_block_size + i] = wet;
+                audio[i] = y;
+            } else {
+                audio[i] = wet * y + (1 - wet) * audio[i];
+            }
             // *it = x;
 
             // Feedback
@@ -661,6 +690,20 @@ void process_audio(Plugin* p, float** output, int start_sample, int num_frames)
         ROUND_STATE_TO_ZERO(s.fb_yn_1)
 
         p->state[ch] = s;
+    }
+
+    if (p->smooth_inputs) {
+        const int listen = xt_atomic_load_u8(&p->smooth_listen);
+        for (int i = 0; i < num_frames; i++) {
+            float wet_audio[2] = {output[0][start_sample + i], output[1][start_sample + i]};
+            float dry_audio[2] = {p->smooth_inputs[i], p->smooth_inputs[2 * p->max_block_size + i]};
+            float mix[2] = {p->smooth_inputs[p->max_block_size + i], p->smooth_inputs[3 * p->max_block_size + i]};
+            float result[2];
+            ss_process(p->smoother, wet_audio, dry_audio, mix,
+                       p->audio_params[PARAM_SMOOTH_AMOUNT], 12 * p->audio_params[PARAM_SMOOTH_LIMIT], listen, result);
+            output[0][start_sample + i] = result[0];
+            output[1][start_sample + i] = result[1];
+        }
     }
 
     // Wrap beat position

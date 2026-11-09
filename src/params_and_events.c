@@ -288,9 +288,13 @@ bool param_string_to_value(uint32_t param_id, const char* str, double* val)
         break;
     case PARAM_SCREAM:
     case PARAM_RESONANCE:
+    case PARAM_SMOOTH_AMOUNT:
     case PARAM_WET:
         if ((ok = sscanf(str, "%lf%%", val)))
             *val *= 0.01;
+        break;
+    case PARAM_SMOOTH_LIMIT:
+        if ((ok = sscanf(str, "%lf", val))) *val /= 12.0;
         break;
     case PARAM_INPUT_GAIN:
         if ((ok = sscanf(str, "%lfdB", val)))
@@ -361,8 +365,12 @@ int param_value_to_string(ParamID paramId, char* buf, size_t bufsize, double val
     }
     case PARAM_SCREAM:
     case PARAM_RESONANCE:
+    case PARAM_SMOOTH_AMOUNT:
     case PARAM_WET:
         n = xtr_fmt(buf, bufsize, 0, "%.2f%%", value * 100);
+        break;
+    case PARAM_SMOOTH_LIMIT:
+        n = xtr_fmt(buf, bufsize, 0, "%.1f dB", value * 12);
         break;
     case PARAM_INPUT_GAIN:
     {
@@ -461,6 +469,8 @@ void cplug_getParameterName(void* p, uint32_t paramId, char* buf, size_t buflen)
         "LFO 2 Sync Rate",
         "LFO 1 ms Rate",
         "LFO 2 ms Rate",
+        "Smooth Amount",
+        "Maximum Reduction",
     };
     // clang-format on
     _Static_assert(ARRLEN(NAMES) == PARAM_COUNT);
@@ -505,6 +515,12 @@ double cplug_getDefaultParameterValue(void* _p, uint32_t paramId)
         v                 = xm_normd(default_dB, RANGE_OUTPUT_GAIN_MIN, RANGE_OUTPUT_GAIN_MAX);
         break;
     }
+    case PARAM_SMOOTH_AMOUNT:
+        v = 0;
+        break;
+    case PARAM_SMOOTH_LIMIT:
+        v = 0.5;
+        break;
     case PARAM_WET:
         v = 1;
         break;

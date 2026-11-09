@@ -2,26 +2,26 @@ cmake_minimum_required(VERSION 3.16)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum OS X deployment version" FORCE)
 set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "" FORCE)
 
-project(Scream
-    VERSION 1.0.12
+project(ScreamCustom
+    VERSION 1.1.0
     DESCRIPTION ""
     HOMEPAGE_URL "https://github.com/Cure-Audio/Scream"
     LANGUAGES C)
-set(COMPANY_NAME "Cure Audio")
+set(COMPANY_NAME "DishItDash")
 
-set(PRODUCT_NAME ${PROJECT_NAME}) # used by info.plist
+set(PRODUCT_NAME "Scream Custom") # used by info.plist
 set(PRODUCT_COPYRIGHT ${COMPANY_NAME})
-set(AUV2_BUNDLE_ID "com.cureaudio.scream.auv2")
-set(CLAP_BUNDLE_ID "com.cureaudio.scream.clap")
-set(VST3_BUNDLE_ID "com.cureaudio.scream.vst3")
-set(APP_BUNDLE_ID "com.cureaudio.scream.app")
+set(AUV2_BUNDLE_ID "com.dishitdash.screamcustom.auv2")
+set(CLAP_BUNDLE_ID "com.dishitdash.screamcustom.clap")
+set(VST3_BUNDLE_ID "com.dishitdash.screamcustom.vst3")
+set(APP_BUNDLE_ID "com.dishitdash.screamcustom.app")
 # Full list of AU types & tags here:
 # https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/AudioUnit.html
 # The properties:
 set(MACOSX_BUNDLE_TAGS "<string>Filter</string>") # Predefined tags are: Bass, Delay, Distortion, Drums, Dynamics, Dynamics Processor, Effects, Equalizer, Filter, Format Converter, Guitar, Imaging, MIDI, Mixer, Offline Effect, Output, Panner, Pitch, Reverb, Sampler, Synthesizer, Time Effect, Vocal. But you can use others.
 set(MACOSX_BUNDLE_TYPE "aufx") # "aufx" for Effect, "augn" for Generator, "aumu" for Instrument, "aufm" for Music Effect.
-set(MACOSX_BUNDLE_SUBTYPE "Scrm") # For AU and GarageBand 10.3 compatibility, the first letter must be upper-case, the others lower-case.
-set(MACOSX_BUNDLE_MANUFACTURER "Cure") # For AU and GarageBand 10.3 compatibility, the first letter must be upper-case, the others lower-case.
+set(MACOSX_BUNDLE_SUBTYPE "Scsm") # For AU and GarageBand 10.3 compatibility, the first letter must be upper-case, the others lower-case.
+set(MACOSX_BUNDLE_MANUFACTURER "Dshd") # For AU and GarageBand 10.3 compatibility, the first letter must be upper-case, the others lower-case.
 # Convert version string (1.0.0) > integer (65536)
 math(EXPR MACOSX_BUNDLE_VERSION_INT "${PROJECT_VERSION_MAJOR} << 16 | ${PROJECT_VERSION_MINOR} << 8 | ${PROJECT_VERSION_PATCH}" OUTPUT_FORMAT DECIMAL) # cool trick bro
 
@@ -107,7 +107,7 @@ endif()
 set(PLUGIN_DEFINITIONS
     CPLUG_COMPANY_NAME="${COMPANY_NAME}"
     CPLUG_COMPANY_EMAIL="contact@cure.audio"
-    CPLUG_PLUGIN_NAME="${PROJECT_NAME}"
+    CPLUG_PLUGIN_NAME="${PRODUCT_NAME}"
     CPLUG_PLUGIN_URI="${PROJECT_HOMEPAGE_URL}"
     CPLUG_PLUGIN_VERSION="${PROJECT_VERSION}"
     _HAS_EXCEPTIONS=0
@@ -121,6 +121,8 @@ set(PLUGIN_DEFINITIONS
 
 set(PLUGIN_SOURCES
     src/plugin.c
+    src/spectral_smoother.c
+    src/libs/pffft.c
     src/state.c
 
     src/gui.c
@@ -236,10 +238,17 @@ endfunction()
 
 # All Plugin formats in one
 if (APPLE)
-    add_library(${PROJECT_NAME}_auv2 MODULE ${PLUGIN_SOURCES} modules/CPLUG/src/cplug_auv2.c)
+    include(cmake/CustomAU.cmake)
+    add_library(${PROJECT_NAME}_auv2 MODULE ${PLUGIN_SOURCES} ${CUSTOM_AU_PATH})
     add_library(${PROJECT_NAME}_clap MODULE ${PLUGIN_SOURCES} modules/CPLUG/src/cplug_clap.c)
     add_library(${PROJECT_NAME}_vst3 MODULE ${PLUGIN_SOURCES} modules/CPLUG/src/cplug_vst3.c)
     configure_info_plist(${PROJECT_NAME}_auv2 ${AUV2_BUNDLE_ID} "BNDL" "component")
+    set(CUSTOM_RESOURCES "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/${PROJECT_NAME}.component/Contents/Resources")
+    file(MAKE_DIRECTORY "${CUSTOM_RESOURCES}")
+    configure_file(assets/Tomorrow-SemiBold.ttf "${CUSTOM_RESOURCES}/Tomorrow-SemiBold.ttf" COPYONLY)
+    configure_file(assets/OFL.txt "${CUSTOM_RESOURCES}/OFL.txt" COPYONLY)
+    configure_file(LICENSE "${CUSTOM_RESOURCES}/LICENSE" COPYONLY)
+    configure_file(src/libs/pffft.h "${CUSTOM_RESOURCES}/PFFFT-notice.h" COPYONLY)
     configure_info_plist(${PROJECT_NAME}_clap ${CLAP_BUNDLE_ID} "BNDL" "clap")
     configure_info_plist(${PROJECT_NAME}_vst3 ${VST3_BUNDLE_ID} "BNDL" "vst3")
 
@@ -272,18 +281,6 @@ if (APPLE)
     target_precompile_headers(${PROJECT_NAME}_clap PRIVATE src/common.h)
     target_precompile_headers(${PROJECT_NAME}_vst3 PRIVATE src/common.h)
 
-    add_custom_command(TARGET ${PROJECT_NAME}_auv2 POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E echo "Installing ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/${PROJECT_NAME}.component to ~/Library/Audio/Plug-Ins/Components/"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/${PROJECT_NAME}.component" "~/Library/Audio/Plug-Ins/Components/${PROJECT_NAME}.component"
-    )
-    add_custom_command(TARGET ${PROJECT_NAME}_clap POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E echo "Installing ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/${PROJECT_NAME}.clap to ~/Library/Audio/Plug-Ins/CLAP/"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/${PROJECT_NAME}.clap" "~/Library/Audio/Plug-Ins/CLAP/${PROJECT_NAME}.clap"
-    )
-    add_custom_command(TARGET ${PROJECT_NAME}_vst3 POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E echo "Installing ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/${PROJECT_NAME}.vst3 to ~/Library/Audio/Plug-Ins/VST3/"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/${PROJECT_NAME}.vst3" "~/Library/Audio/Plug-Ins/VST3/${PROJECT_NAME}.vst3"
-    )
 elseif(WIN32)
     add_library(${PROJECT_NAME}_plugin MODULE
         ${PLUGIN_SOURCES}
